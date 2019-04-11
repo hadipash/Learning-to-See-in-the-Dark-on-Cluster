@@ -99,10 +99,8 @@ for ind in range(len(train_ids)):
     # input_patch = tmp_image[:, yy:yy + ps, xx:xx + ps, :]
     gt_patch = tmp_gt[:, yy * 2:yy * 2 + ps * 2, xx * 2:xx * 2 + ps * 2, :]
 
-
     # in_filename = os.path.basename(in_path)[:-4]
     gt_filename = os.path.basename(gt_path)[:-4]
-
 
     print(gt_data_dir+gt_filename+'.pkl')
 
