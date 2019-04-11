@@ -7,8 +7,8 @@ import sys, os
 
 input_dir = "/home/hduser/Sony/short/"
 gt_dir = '/home/hduser/Sony/long/'
-input_data_dir = '/home/hduser/Sony/tmp_image/'
-gt_data_dir = '/home/hduser/Sony/tmp_gt/'
+input_data_dir = '/home/hduser/Sony/image_data/'
+gt_data_dir = '/home/hduser/Sony/gt_data/'
 
 # get train IDs
 train_fns = glob.glob(gt_dir + '0*.ARW')
@@ -52,21 +52,20 @@ for ind in range(len(train_ids)):
     train_id = train_ids[ind]
     in_files = glob.glob(input_dir + '%05d_00*.ARW' % train_id)
     print(in_files)
-    in_path = in_files[np.random.random_integers(0, len(in_files) - 1)]
-    in_fn = os.path.basename(in_path)
+    in_path1 = in_files[np.random.random_integers(0, len(in_files) - 1)]
+    in_fn1 = os.path.basename(in_path1)
 
     gt_files = glob.glob(gt_dir + '%05d_00*.ARW' % train_id)
     gt_path = gt_files[0]
     gt_fn = os.path.basename(gt_path)
-    in_exposure = float(in_fn[9:-5])
+    in_exposure1 = float(in_fn1[9:-5])
     gt_exposure = float(gt_fn[9:-5])
 
-    ratio = min(gt_exposure / in_exposure, 300)
+    ratio1 = min(gt_exposure / in_exposure1, 300)
 
-
-    # if input_images[str(ratio)[0:3]][ind] is None:
-    raw = rawpy.imread(in_path)
-    tmp_image = np.expand_dims(pack_raw(raw), axis=0) * ratio
+    # # if input_images[str(ratio)[0:3]][ind] is None:
+    raw1 = rawpy.imread(in_path1)
+    tmp_image1 = np.expand_dims(pack_raw(raw1), axis=0) * ratio1
 
     gt_raw = rawpy.imread(gt_path)
     im = gt_raw.postprocess(use_camera_wb=True, half_size=False, no_auto_bright=True, output_bps=16)
@@ -74,28 +73,42 @@ for ind in range(len(train_ids)):
 
 
     # crop
-    H = tmp_image.shape[1]
-    W = tmp_image.shape[2]
+    H = tmp_image1.shape[1]
+    W = tmp_image1.shape[2]
 
     xx = np.random.randint(0, W - ps)
     yy = np.random.randint(0, H - ps)
-    input_patch = tmp_image[:, yy:yy + ps, xx:xx + ps, :]
+
+    for f in in_files:
+        in_fn = os.path.basename(f)
+        in_exposure = float(in_fn[9:-5])
+        ratio = min(gt_exposure / in_exposure, 300)
+        raw = rawpy.imread(f)
+        tmp_image = np.expand_dims(pack_raw(raw), axis=0) * ratio
+
+        input_patch = tmp_image[:, yy:yy + ps, xx:xx + ps, :]
+
+        in_filename = os.path.basename(f)[:-4]
+
+        print(input_data_dir + in_filename + '.pkl')
+
+        with open(input_data_dir + in_filename + '.pkl', "w+") as input_file:
+            pickle.dump(input_patch, input_file)
+        input_file.close()
+
+    # input_patch = tmp_image[:, yy:yy + ps, xx:xx + ps, :]
     gt_patch = tmp_gt[:, yy * 2:yy * 2 + ps * 2, xx * 2:xx * 2 + ps * 2, :]
 
 
-    in_filename = os.path.basename(in_path)[:-4]
+    # in_filename = os.path.basename(in_path)[:-4]
     gt_filename = os.path.basename(gt_path)[:-4]
 
-    print(input_data_dir+in_filename+'.pkl')
+
     print(gt_data_dir+gt_filename+'.pkl')
 
-    # with open(input_data_dir+in_filename+'.pkl', "w+") as input_file:
-    #     pickle.dump(input_patch, input_file)
-    # input_file.close()
-    #
-    # with open(gt_data_dir+gt_filename+'.pkl', "w+") as gt_file:
-    #     pickle.dump(gt_patch, gt_file)
-    # gt_file.close()
+    with open(gt_data_dir+gt_filename+'.pkl', "w+") as gt_file:
+        pickle.dump(gt_patch, gt_file)
+    gt_file.close()
 
     count += 1
     print(count)
