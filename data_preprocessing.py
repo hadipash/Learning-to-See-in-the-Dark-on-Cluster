@@ -71,7 +71,6 @@ for ind in range(len(train_ids)):
     im = gt_raw.postprocess(use_camera_wb=True, half_size=False, no_auto_bright=True, output_bps=16)
     tmp_gt = np.expand_dims(np.float32(im / 65535.0), axis=0)
 
-
     # crop
     H = tmp_image1.shape[1]
     W = tmp_image1.shape[2]
