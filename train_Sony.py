@@ -4,20 +4,20 @@
 # improvement upon cqf37
 from __future__ import division
 import argparse
+import pickle
 from pyspark import SparkContext, SparkConf
 from tensorflowonspark import TFCluster
+from io import BytesIO
 
 
 def main_fun(argv, ctx):
     # this will be executed/imported on the executors.
-    import sys, os, time, scipy.io
+    import sys, time
     from datetime import datetime
     import tensorflow as tf
     import tensorflow.contrib.slim as slim
     from tensorflowonspark import TFNode
     import numpy as np
-    import rawpy
-    import glob
 
     sys.argv = argv
     num_workers = len(ctx.cluster_spec['worker'])
@@ -26,44 +26,40 @@ def main_fun(argv, ctx):
     task_index = ctx.task_index
 
     # the cluster has no GPUs
-    cluster_spec, server = TFNode.start_cluster_server(ctx, num_gpus=0)
+    cluster, server = TFNode.start_cluster_server(ctx, num_gpus=0)
     # Create generator for Spark data feed
     tf_feed = ctx.get_data_feed(args.mode == 'train')
 
     def rdd_generator():
         while not tf_feed.should_stop():
-            # TODO: read images and labels
-            # batch = tf_feed.next_batch(1)
-            # if len(batch) == 0:
-            #     return
-            # row = batch[0]
-            # image = np.array(row[0]).astype(np.float32) / 255.0
-            # label = np.array(row[1]).astype(np.int64)
-            # yield (image, label)
-            pass
+            batch = tf_feed.next_batch(1)
+
+            if len(batch) == 0:
+                return
+
+            row = batch[0]
+            input_patch = row[0]
+            gt_patch = row[1]
+
+            if np.random.randint(2, size=1)[0] == 1:  # random flip
+                input_patch = np.flip(input_patch, axis=1)
+                gt_patch = np.flip(gt_patch, axis=1)
+            if np.random.randint(2, size=1)[0] == 1:
+                input_patch = np.flip(input_patch, axis=2)
+                gt_patch = np.flip(gt_patch, axis=2)
+            if np.random.randint(2, size=1)[0] == 1:  # random transpose
+                input_patch = np.transpose(input_patch, (0, 2, 1, 3))
+                gt_patch = np.transpose(gt_patch, (0, 2, 1, 3))
+
+            input_patch = np.minimum(input_patch, 1.0)
+
+            yield (input_patch, gt_patch)
 
     if job_name == "ps":
         server.join()
     elif job_name == "worker":
-        with tf.device(tf.train.replica_device_setter(
-                worker_device="/job:worker/task:%d" % task_index, cluster=cluster)):
-
-            input_dir = 'hdfs://gpu10-cluster/datasets/Sony/Sony/short/'
-            gt_dir = 'hdfs://gpu10-cluster/datasets/Sony/Sony/long/'
-            checkpoint_dir = 'hdfs://gpu10-clusters/result_Sony/'
-            result_dir = 'hdfs://gpu10-cluster/result_Sony/'
-
-            # TODO: probably we want to read ids from txt files
-            # get train IDs
-            train_fns = glob.glob(gt_dir + '0*.ARW')
-            train_ids = [int(os.path.basename(train_fn)[0:5]) for train_fn in train_fns]
-
-            ps = 512  # patch size for training
-
-            DEBUG = 0
-            if DEBUG == 1:
-                train_ids = train_ids[0:5]
-
+        with tf.device(tf.train.replica_device_setter(worker_device="/job:worker/task:%d" % task_index,
+                                                      cluster=cluster)):
             def lrelu(x):
                 return tf.maximum(x * 0.2, x)
 
@@ -118,32 +114,9 @@ def main_fun(argv, ctx):
                 out = tf.depth_to_space(conv10, 2)
                 return out
 
-            # TODO: have we done this stage?
-            def pack_raw(raw):
-                # pack Bayer image to 4 channels
-                im = raw.raw_image_visible.astype(np.float32)
-                im = np.maximum(im - 512, 0) / (16383 - 512)  # subtract the black level
-
-                im = np.expand_dims(im, axis=2)
-                img_shape = im.shape
-                H = img_shape[0]
-                W = img_shape[1]
-
-                out = np.concatenate((im[0:H:2, 0:W:2, :],
-                                      im[0:H:2, 1:W:2, :],
-                                      im[1:H:2, 1:W:2, :],
-                                      im[1:H:2, 0:W:2, :]), axis=2)
-                return out
-
-            # TODO: change dataset parameters
-            # TODO: this is old code
-            # sess = tf.Session()
-            # in_image = tf.placeholder(tf.float32, [None, None, None, 4])
-            # gt_image = tf.placeholder(tf.float32, [None, None, None, 3])
-            # TODO: this is new code
             # Dataset for input data
             ds = tf.data.Dataset.from_generator(rdd_generator, (tf.float32, tf.float32), (
-                tf.TensorShape([0 * 0]), tf.TensorShape([10]))).batch(args.batch_size)
+                tf.TensorShape([None, None, None, 4]), tf.TensorShape([None, None, None, 3]))).batch(args.batch_size)
             iterator = ds.make_one_shot_iterator()
             in_image, gt_image = iterator.get_next()
 
@@ -162,6 +135,8 @@ def main_fun(argv, ctx):
         logdir = ctx.absolute_path(args.model)
         print("tensorflow model path: {0}".format(logdir))
 
+        epoch = 0
+
         hooks = [tf.train.StopAtStepHook(last_step=(args.epochs / args.batch_size))] if args.mode == "train" else []
         with tf.train.MonitoredTrainingSession(master=server.target,
                                                is_chief=(task_index == 0),
@@ -170,105 +145,77 @@ def main_fun(argv, ctx):
                                                hooks=hooks) as sess:
             print("{} session ready".format(datetime.now().isoformat()))
 
-            epoch = 0
             while not sess.should_stop() and not tf_feed.should_stop():
-                # TODO: prepare the dataset
                 # TODO: split training and testing stages
-
-                # TODO: do we need this if we are going to use RDD?
-                # Raw data takes long time to load. Keep them in memory after loaded.
-                gt_images = [None] * 6000
-                input_images = {}
-                input_images['300'] = [None] * len(train_ids)
-                input_images['250'] = [None] * len(train_ids)
-                input_images['100'] = [None] * len(train_ids)
-
                 g_loss = np.zeros((5000, 1))
 
-                # TODO: do we need this if we are going to use RDD?
-                allfolders = glob.glob('./result/*0')
-                lastepoch = 0
-                for folder in allfolders:
-                    lastepoch = np.maximum(lastepoch, int(folder[-4:]))
+                st = time.time()
 
                 learning_rate = 1e-4
                 if epoch > 2000:
                     learning_rate = 1e-5
 
-                cnt = 0
-                for ind in np.random.permutation(len(train_ids)):
-                    # TODO: prepare data batch for each epoch?
-                    # get the path from image id
-                    train_id = train_ids[ind]
-                    in_files = glob.glob(input_dir + '%05d_00*.ARW' % train_id)
-                    in_path = in_files[np.random.random_integers(0, len(in_files) - 1)]
-                    in_fn = os.path.basename(in_path)
-
-                    gt_files = glob.glob(gt_dir + '%05d_00*.ARW' % train_id)
-                    gt_path = gt_files[0]
-                    gt_fn = os.path.basename(gt_path)
-                    in_exposure = float(in_fn[9:-5])
-                    gt_exposure = float(gt_fn[9:-5])
-                    ratio = min(gt_exposure / in_exposure, 300)
-
-                    st = time.time()
-                    cnt += 1
-
-                    if input_images[str(ratio)[0:3]][ind] is None:
-                        raw = rawpy.imread(in_path)
-                        input_images[str(ratio)[0:3]][ind] = np.expand_dims(pack_raw(raw), axis=0) * ratio
-
-                        gt_raw = rawpy.imread(gt_path)
-                        im = gt_raw.postprocess(use_camera_wb=True, half_size=False, no_auto_bright=True, output_bps=16)
-                        gt_images[ind] = np.expand_dims(np.float32(im / 65535.0), axis=0)
-
-                    # crop
-                    H = input_images[str(ratio)[0:3]][ind].shape[1]
-                    W = input_images[str(ratio)[0:3]][ind].shape[2]
-
-                    xx = np.random.randint(0, W - ps)
-                    yy = np.random.randint(0, H - ps)
-                    input_patch = input_images[str(ratio)[0:3]][ind][:, yy:yy + ps, xx:xx + ps, :]
-                    gt_patch = gt_images[ind][:, yy * 2:yy * 2 + ps * 2, xx * 2:xx * 2 + ps * 2, :]
-
-                    if np.random.randint(2, size=1)[0] == 1:  # random flip
-                        input_patch = np.flip(input_patch, axis=1)
-                        gt_patch = np.flip(gt_patch, axis=1)
-                    if np.random.randint(2, size=1)[0] == 1:
-                        input_patch = np.flip(input_patch, axis=2)
-                        gt_patch = np.flip(gt_patch, axis=2)
-                    if np.random.randint(2, size=1)[0] == 1:  # random transpose
-                        input_patch = np.transpose(input_patch, (0, 2, 1, 3))
-                        gt_patch = np.transpose(gt_patch, (0, 2, 1, 3))
-
-                    input_patch = np.minimum(input_patch, 1.0)
-
-                    if args.mode == "train":
-                        _, G_current, output = sess.run([G_opt, G_loss, out_image],
-                                                        feed_dict={in_image: input_patch, gt_image: gt_patch,
-                                                                   lr: learning_rate})
-                        output = np.minimum(np.maximum(output, 0), 1)
-                        g_loss[ind] = G_current
-                        print("%d %d Loss=%.3f Time=%.3f" % (
-                            epoch, cnt, np.mean(g_loss[np.where(g_loss)]), time.time() - st))
+                _, G_current, output = sess.run([G_opt, G_loss, out_image],
+                                                feed_dict={in_image: in_image, gt_image: gt_image, lr: learning_rate})
+                output = np.minimum(np.maximum(output, 0), 1)
 
                 epoch += 1
 
+        print("{} stopping MonitoredTrainingSession".format(datetime.now().isoformat()))
+
+        if sess.should_stop() or epoch >= args.epochs:
+            tf_feed.terminate()
+
+        # WORKAROUND FOR https://github.com/tensorflow/tensorflow/issues/21745
+        # wait for all other nodes to complete (via done files)
+        done_dir = "{}/{}/done".format(ctx.absolute_path(args.model), args.mode)
+        print("Writing done file to: {}".format(done_dir))
+        tf.gfile.MakeDirs(done_dir)
+        with tf.gfile.GFile("{}/{}".format(done_dir, ctx.task_index), 'w') as done_file:
+            done_file.write("done")
+
+        for i in range(60):
+            if len(tf.gfile.ListDirectory(done_dir)) < len(ctx.cluster_spec['worker']):
+                print("{} Waiting for other nodes {}".format(datetime.now().isoformat(), i))
+                time.sleep(1)
+            else:
+                print("{} All nodes done".format(datetime.now().isoformat()))
+                break
+
 
 if __name__ == '__main__':
-    sc = SparkContext(conf=SparkConf().setAppName("See in the Dark"))
+    sc = SparkContext(conf=SparkConf().setAppName("See in the Dark (train Sony)"))
     executors = sc.getConf().get("spark.executor.instances")
     num_executors = int(executors) if executors is not None else 1
 
     # arguments for Spark and TFoS
     parser = argparse.ArgumentParser()
+    parser.add_argument("--batch_size", help="number of records per batch", type=int, default=100)
     parser.add_argument("--cluster_size", help="number of nodes in the cluster", type=int, default=num_executors)
     parser.add_argument("--num_ps", help="number of ps nodes", type=int, default=1)
     parser.add_argument("--tensorboard", help="launch tensorboard process", default=False)
     parser.add_argument("--driver_ps_nodes", help="""run tensorflow PS node on driver locally.
         You will need to set cluster_size = num_executors + num_ps""", default=False)
-    (args, rem) = parser.parse_known_args()
+    parser.add_argument("--mode", help="train|inference", default="train")
+    parser.add_argument("--epochs", help="number of epochs", type=int, default=1)
+    parser.add_argument("--model", help="HDFS path to save/load model during train/inference",
+                        default='hdfs://gpu10:9000/Sony_dataset_pkl/Sony_model')
+    parser.add_argument("--input-dir", help="HDFS path to training set",
+                        default='hdfs://gpu10:9000/Sony_dataset_pkl/Sony_dataset_pkl/image_data_list')
+    parser.add_argument("--gt-dir", help="HDFS path to ground truth training set",
+                        default='hdfs://gpu10:9000/Sony_dataset_pkl/Sony_dataset_pkl/gt_data')
+    args = parser.parse_args()
 
-    cluster = TFCluster.run(sc, main_fun, rem, args.cluster_size, args.num_ps, args.tensorboard,
+    in_images = sc.binaryFiles(args.input_dir, 1000).sortByKey(ascending=True).map(lambda (k, v): (pickle.load(BytesIO(v))))
+    gt_images = sc.binaryFiles(args.gt_dir, 1000).sortByKey(ascending=True).map(lambda (k, v): pickle.load(BytesIO(v)))
+
+    print("zipping input and ground truth images")
+    dataRDD = in_images.zip(gt_images)
+
+    cluster = TFCluster.run(sc, main_fun, args, args.cluster_size, args.num_ps, args.tensorboard,
                             TFCluster.InputMode.SPARK, driver_ps_nodes=args.driver_ps_nodes)
+
+    if args.mode == 'train':
+        cluster.train(dataRDD, args.epochs)
+
     cluster.shutdown()
