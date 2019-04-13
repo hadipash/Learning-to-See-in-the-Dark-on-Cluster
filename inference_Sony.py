@@ -23,8 +23,37 @@ def main_fun(argv, ctx):
     # the cluster has no GPUs
     cluster, server = TFNode.start_cluster_server(ctx, num_gpus=0)
     # Create generator for Spark data feed
-    #tf_feed = ctx.get_data_feed(argv.mode == 'inference')
+    tf_feed = ctx.get_data_feed(argv.mode == 'inference')
 
+    def rdd_generator():
+        while not tf_feed.should_stop():
+            batch = tf_feed.next_batch(1)
+
+            if len(batch) == 0:
+                return
+
+            row = batch[0]
+            input_patch = row[0]
+            gt_patch = row[1]
+
+            if np.random.randint(2, size=1)[0] == 1:  # random flip
+                input_patch = np.flip(input_patch, axis=1)
+                gt_patch = np.flip(gt_patch, axis=1)
+            if np.random.randint(2, size=1)[0] == 1:
+                input_patch = np.flip(input_patch, axis=2)
+                gt_patch = np.flip(gt_patch, axis=2)
+            if np.random.randint(2, size=1)[0] == 1:  # random transpose
+                input_patch = np.transpose(input_patch, (0, 2, 1, 3))
+                gt_patch = np.transpose(gt_patch, (0, 2, 1, 3))
+
+            input_patch = np.minimum(input_patch, 1.0)
+
+            gt_shape = gt_patch.shape
+            input_shape = input_patch.shape
+            gt_patch = gt_patch.reshape((gt_shape[1], gt_shape[2], gt_shape[3]))
+            input_patch = input_patch.reshape((input_shape[1], input_shape[2], input_shape[3]))
+
+            yield (input_patch, gt_patch)
     if job_name == "ps":
         server.join()
     elif job_name == "worker":
@@ -84,7 +113,13 @@ def main_fun(argv, ctx):
                 out = tf.depth_to_space(conv10, 2)
                 return out
 
-            out_image = network(argv.input)
+            ds = tf.data.Dataset.from_generator(rdd_generator, (tf.float32, tf.float32), (
+                tf.TensorShape([None, None, 4]), tf.TensorShape([None, None, 3]))).batch(argv.batch_size)
+
+            iterator = ds.make_one_shot_iterator()
+            in_image, gt_image = iterator.get_next()
+
+            out_image = network(in_image)
             
         # Create a "supervisor", which oversees the training process and stores model state into HDFS
         logdir = ctx.absolute_path(argv.model)
