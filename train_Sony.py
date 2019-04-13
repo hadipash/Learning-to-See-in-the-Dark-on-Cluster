@@ -53,6 +53,11 @@ def main_fun(argv, ctx):
 
             input_patch = np.minimum(input_patch, 1.0)
 
+            gt_shape = gt_patch.shape
+            input_shape = input_patch.shape
+            gt_patch = gt_patch.reshape((gt_shape[1], gt_shape[2], gt_shape[3]))
+            input_patch = input_patch.reshape((input_shape[1], input_shape[2], input_shape[3]))
+
             yield (input_patch, gt_patch)
 
     if job_name == "ps":
@@ -116,12 +121,13 @@ def main_fun(argv, ctx):
 
             # Dataset for input data
             ds = tf.data.Dataset.from_generator(rdd_generator, (tf.float32, tf.float32), (
-                tf.TensorShape([None, None, None, 4]), tf.TensorShape([None, None, None, 3]))).batch(args.batch_size)
+                tf.TensorShape([None, None, 4]), tf.TensorShape([None, None, 3]))).batch(args.batch_size)
             iterator = ds.make_one_shot_iterator()
             in_image, gt_image = iterator.get_next()
 
             out_image = network(in_image)
 
+            tf.train.get_or_create_global_step()
             G_loss = tf.reduce_mean(tf.abs(out_image - gt_image))
 
             t_vars = tf.trainable_variables()
@@ -155,8 +161,7 @@ def main_fun(argv, ctx):
                 if epoch > 2000:
                     learning_rate = 1e-5
 
-                _, G_current, output = sess.run([G_opt, G_loss, out_image],
-                                                feed_dict={in_image: in_image, gt_image: gt_image, lr: learning_rate})
+                _, G_current, output = sess.run([G_opt, G_loss, out_image], feed_dict={lr: learning_rate})
                 output = np.minimum(np.maximum(output, 0), 1)
 
                 epoch += 1
@@ -199,15 +204,15 @@ if __name__ == '__main__':
     parser.add_argument("--mode", help="train|inference", default="train")
     parser.add_argument("--epochs", help="number of epochs", type=int, default=1)
     parser.add_argument("--model", help="HDFS path to save/load model during train/inference",
-                        default='hdfs://gpu10:9000/Sony_dataset_pkl/Sony_model')
+                        default='hdfs://gpu10:9000/Sony_model')
     parser.add_argument("--input-dir", help="HDFS path to training set",
-                        default='hdfs://gpu10:9000/Sony_dataset_pkl/Sony_dataset_pkl/image_data_list')
+                        default='hdfs://gpu10:9000/Sony_pickle/image_data')
     parser.add_argument("--gt-dir", help="HDFS path to ground truth training set",
-                        default='hdfs://gpu10:9000/Sony_dataset_pkl/Sony_dataset_pkl/gt_data')
+                        default='hdfs://gpu10:9000/Sony_pickle/gt_data')
     args = parser.parse_args()
 
-    in_images = sc.binaryFiles(args.input_dir, 1000).sortByKey(ascending=True).map(lambda (k, v): (pickle.load(BytesIO(v))))
-    gt_images = sc.binaryFiles(args.gt_dir, 1000).sortByKey(ascending=True).map(lambda (k, v): pickle.load(BytesIO(v)))
+    in_images = sc.binaryFiles(args.input_dir, 280).sortByKey(ascending=True).map(lambda (k, v): (pickle.load(BytesIO(v))))
+    gt_images = sc.binaryFiles(args.gt_dir, 280).sortByKey(ascending=True).map(lambda (k, v): pickle.load(BytesIO(v)))
 
     print("zipping input and ground truth images")
     dataRDD = in_images.zip(gt_images)
