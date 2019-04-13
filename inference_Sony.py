@@ -23,7 +23,7 @@ def main_fun(argv, ctx):
     # the cluster has no GPUs
     cluster, server = TFNode.start_cluster_server(ctx, num_gpus=0)
     # Create generator for Spark data feed
-    tf_feed = ctx.get_data_feed(argv.mode == 'inference')
+    #tf_feed = ctx.get_data_feed(argv.mode == 'inference')
 
     if job_name == "ps":
         server.join()
@@ -83,4 +83,20 @@ def main_fun(argv, ctx):
                 conv10 = slim.conv2d(conv9, 12, [1, 1], rate=1, activation_fn=None, scope='g_conv10')
                 out = tf.depth_to_space(conv10, 2)
                 return out
-                
+
+            out_image = network(argv.input)
+            
+        # Create a "supervisor", which oversees the training process and stores model state into HDFS
+        logdir = ctx.absolute_path(argv.model)
+        print("tensorflow model path: {0}".format(logdir))
+
+        hooks = []
+        with tf.train.MonitoredTrainingSession(master=server.target,
+                                            is_chief=(task_index == 0),
+                                            checkpoint_dir=logdir,
+                                            hooks=hooks) as sess:
+            print("{} session ready".format(datetime.now().isoformat()))
+
+            output = sess.run(out_image)
+
+    
