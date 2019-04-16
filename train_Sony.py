@@ -12,14 +12,13 @@ from io import BytesIO
 
 def main_fun(argv, ctx):
     # this will be executed/imported on the executors.
-    import sys, time
+    import time
     from datetime import datetime
     import tensorflow as tf
     import tensorflow.contrib.slim as slim
     from tensorflowonspark import TFNode
     import numpy as np
 
-    sys.argv = argv
     num_workers = len(ctx.cluster_spec['worker'])
     worker_num = ctx.worker_num
     job_name = ctx.job_name
@@ -28,7 +27,7 @@ def main_fun(argv, ctx):
     # the cluster has no GPUs
     cluster, server = TFNode.start_cluster_server(ctx, num_gpus=0)
     # Create generator for Spark data feed
-    tf_feed = ctx.get_data_feed(args.mode == 'train')
+    tf_feed = ctx.get_data_feed(argv.mode == 'train')
 
     def rdd_generator():
         while not tf_feed.should_stop():
@@ -37,9 +36,8 @@ def main_fun(argv, ctx):
             if len(batch) == 0:
                 return
 
-            row = batch[0]
-            input_patch = row[0]
-            gt_patch = row[1]
+            input_patch = batch[0][0]
+            gt_patch = batch[0][1]
 
             if np.random.randint(2, size=1)[0] == 1:  # random flip
                 input_patch = np.flip(input_patch, axis=1)
@@ -53,10 +51,8 @@ def main_fun(argv, ctx):
 
             input_patch = np.minimum(input_patch, 1.0)
 
-            gt_shape = gt_patch.shape
-            input_shape = input_patch.shape
-            gt_patch = gt_patch.reshape((gt_shape[1], gt_shape[2], gt_shape[3]))
-            input_patch = input_patch.reshape((input_shape[1], input_shape[2], input_shape[3]))
+            gt_patch = np.squeeze(gt_patch, axis=0)
+            input_patch = np.squeeze(input_patch, axis=0)
 
             yield (input_patch, gt_patch)
 
@@ -121,29 +117,30 @@ def main_fun(argv, ctx):
 
             # Dataset for input data
             ds = tf.data.Dataset.from_generator(rdd_generator, (tf.float32, tf.float32), (
-                tf.TensorShape([None, None, 4]), tf.TensorShape([None, None, 3]))).batch(args.batch_size)
+                tf.TensorShape([None, None, 4]), tf.TensorShape([None, None, 3]))).batch(argv.batch_size)
             iterator = ds.make_one_shot_iterator()
             in_image, gt_image = iterator.get_next()
 
             out_image = network(in_image)
 
-            tf.train.get_or_create_global_step()
+            global_step = tf.train.get_or_create_global_step()
             G_loss = tf.reduce_mean(tf.abs(out_image - gt_image))
 
             t_vars = tf.trainable_variables()
             lr = tf.placeholder(tf.float32)
-            G_opt = tf.train.AdamOptimizer(learning_rate=lr).minimize(G_loss)
+            G_opt = tf.train.AdamOptimizer(learning_rate=lr).minimize(G_loss, global_step=global_step)
 
             saver = tf.train.Saver()
             init_op = tf.global_variables_initializer()
 
         # Create a "supervisor", which oversees the training process and stores model state into HDFS
-        logdir = ctx.absolute_path(args.model)
+        logdir = ctx.absolute_path(argv.model)
         print("tensorflow model path: {0}".format(logdir))
 
-        epoch = 0
+        epoch_thresh = 2000 * (280 / argv.batch_size)
+        learning_rate = 1e-4
 
-        hooks = [tf.train.StopAtStepHook(last_step=(args.epochs / args.batch_size))] if args.mode == "train" else []
+        hooks = [tf.train.StopAtStepHook(last_step=argv.steps)] if argv.mode == "train" else []
         with tf.train.MonitoredTrainingSession(master=server.target,
                                                is_chief=(task_index == 0),
                                                scaffold=tf.train.Scaffold(init_op=init_op, saver=saver),
@@ -151,29 +148,22 @@ def main_fun(argv, ctx):
                                                hooks=hooks) as sess:
             print("{} session ready".format(datetime.now().isoformat()))
 
+            step = 0
             while not sess.should_stop() and not tf_feed.should_stop():
-                # TODO: split training and testing stages
-                g_loss = np.zeros((5000, 1))
-
-                st = time.time()
-
-                learning_rate = 1e-4
-                if epoch > 2000:
+                if step > epoch_thresh:
                     learning_rate = 1e-5
 
-                _, G_current, output = sess.run([G_opt, G_loss, out_image], feed_dict={lr: learning_rate})
-                output = np.minimum(np.maximum(output, 0), 1)
-
-                epoch += 1
+                _, G_current, output, step = sess.run([G_opt, G_loss, out_image, global_step],
+                                                      feed_dict={lr: learning_rate})
 
         print("{} stopping MonitoredTrainingSession".format(datetime.now().isoformat()))
 
-        if sess.should_stop() or epoch >= args.epochs:
+        if sess.should_stop() or step >= argv.steps:
             tf_feed.terminate()
 
         # WORKAROUND FOR https://github.com/tensorflow/tensorflow/issues/21745
         # wait for all other nodes to complete (via done files)
-        done_dir = "{}/{}/done".format(ctx.absolute_path(args.model), args.mode)
+        done_dir = "{}/{}/done".format(ctx.absolute_path(argv.model), argv.mode)
         print("Writing done file to: {}".format(done_dir))
         tf.gfile.MakeDirs(done_dir)
         with tf.gfile.GFile("{}/{}".format(done_dir, ctx.task_index), 'w') as done_file:
@@ -195,14 +185,13 @@ if __name__ == '__main__':
 
     # arguments for Spark and TFoS
     parser = argparse.ArgumentParser()
-    parser.add_argument("--batch_size", help="number of records per batch", type=int, default=100)
+    parser.add_argument("--batch_size", help="number of records per batch", type=int, default=2)
     parser.add_argument("--cluster_size", help="number of nodes in the cluster", type=int, default=num_executors)
     parser.add_argument("--num_ps", help="number of ps nodes", type=int, default=1)
     parser.add_argument("--tensorboard", help="launch tensorboard process", default=False)
-    parser.add_argument("--driver_ps_nodes", help="""run tensorflow PS node on driver locally.
-        You will need to set cluster_size = num_executors + num_ps""", default=False)
     parser.add_argument("--mode", help="train|inference", default="train")
-    parser.add_argument("--epochs", help="number of epochs", type=int, default=1)
+    parser.add_argument("--epochs", help="number of epochs", type=int, default=10)
+    parser.add_argument("--steps", help="maximum number of steps", type=int, default=1400)
     parser.add_argument("--model", help="HDFS path to save/load model during train/inference",
                         default='hdfs://gpu10:9000/Sony_model')
     parser.add_argument("--input-dir", help="HDFS path to training set",
@@ -211,14 +200,13 @@ if __name__ == '__main__':
                         default='hdfs://gpu10:9000/Sony_pickle/gt_data')
     args = parser.parse_args()
 
-    in_images = sc.binaryFiles(args.input_dir, 280).sortByKey(ascending=True).map(lambda (k, v): (pickle.load(BytesIO(v))))
-    gt_images = sc.binaryFiles(args.gt_dir, 280).sortByKey(ascending=True).map(lambda (k, v): pickle.load(BytesIO(v)))
-
-    print("zipping input and ground truth images")
+    in_images = sc.binaryFiles(args.input_dir, 560).sortByKey(ascending=True).map(lambda (k, v): (pickle.load(BytesIO(v))))
+    gt_images = sc.binaryFiles(args.gt_dir, 560).sortByKey(ascending=True).map(lambda (k, v): pickle.load(BytesIO(v)))
     dataRDD = in_images.zip(gt_images)
+    dataRDD = dataRDD.cache()
 
     cluster = TFCluster.run(sc, main_fun, args, args.cluster_size, args.num_ps, args.tensorboard,
-                            TFCluster.InputMode.SPARK, driver_ps_nodes=args.driver_ps_nodes)
+                            TFCluster.InputMode.SPARK)
 
     if args.mode == 'train':
         cluster.train(dataRDD, args.epochs)
