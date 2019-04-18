@@ -28,12 +28,11 @@ def main_fun(argv, ctx):
 
     def feed_dict(batch):
         input_patch = np.zeros((1, 512, 512, 4))
-        gt_patch = np.zeros((1, 1024, 1024, 3))
 
         if batch:
             input_patch = np.array(batch[0][0]).reshape((1, 512, 512, 4))
 
-        return (input_patch, gt_patch)
+        return input_patch
 
     if job_name == "ps":
         server.join()
@@ -125,11 +124,10 @@ def main_fun(argv, ctx):
                 # perform *synchronous* training.
 
                 # using feed_dict
-                batch_xs, batch_ys = feed_dict(tf_feed.next_batch(1))
-                feed = {in_image: batch_xs, gt_image: batch_ys}
+                batch_xs = feed_dict(tf_feed.next_batch(1))
 
                 if len(batch_xs) > 0:
-                    output = sess.run(out_image, feed_dict=feed)
+                    output = sess.run(out_image, feed_dict={in_image: batch_xs})
                     output = np.minimum(np.maximum(output, 0), 1)
                     tf_feed.batch_results(output)
 
