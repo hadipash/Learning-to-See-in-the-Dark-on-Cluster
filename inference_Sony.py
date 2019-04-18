@@ -188,10 +188,9 @@ if __name__ == '__main__':
 
 
     # parse the string rdd to numpy rdd
-    imageRDD = sc.binaryFiles(hdfs_path).sortByKey(ascending=True).map(lambda (k, v): (pickle.load(BytesIO(v))))
+    imageRDD = sc.binaryFiles(args.inputfile).sortByKey(ascending=True).map(lambda (k, v): (pickle.load(BytesIO(v))))
     # words = rawtextRDD.flatMap(lambda line: line.split(" "))
     inputfile = imageRDD.collect()
-    print(inputfile)
 
     # pairs = words.map(lambda word: (word, 1))
     # wordCounts = pairs.reduceByKey(lambda x, y: x + y)
@@ -201,23 +200,12 @@ if __name__ == '__main__':
     print('inference starting.....................................')
     labelRDD = cluster.inference(imageRDD)
     print('inference finished.....................................')
-    '''
-    def sendRecord(rdd):
-        connection = createNewConnection()  # executed at the driver
-        rdd.foreach(lambda record: connection.send(record))
-        connection.close()
-    '''
+
     output = labelRDD.collect()
     print(output)
     with open(args.outputfile,'wb') as f:
         pickle.dump(output, f)
 
-    # labelRDD.pprint()
-    # lambda rdd: rdd.saveAsTextFile(args.output + "{}".format(datetime.now().isoformat()).replace(':', '_'))
-    # labelRDD.foreachRDD(print)
-    # labelRDD.saveAsTextFiles(args.output)
-    output = labelRDD.take(1)
-    print(output)
     cluster.shutdown()
 
     # ssc.start()             # Start the computation
