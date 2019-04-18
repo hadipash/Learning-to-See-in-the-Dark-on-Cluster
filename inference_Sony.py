@@ -5,7 +5,6 @@ from pyspark import SparkContext, SparkConf
 from tensorflowonspark import TFCluster
 from io import BytesIO
 
-
 def main_fun(argv, ctx):
     # this will be executed/imported on the executors.
     import time
@@ -30,8 +29,8 @@ def main_fun(argv, ctx):
         input_patch = np.zeros((1, 512, 512, 4))
 
         if batch:
-            input_patch = np.array(batch[0][0]).reshape((1, 512, 512, 4))
-
+            input_patch = np.array(batch[0][0])#.reshape((1, 512, 512, 4))
+            input_patch = np.expand_dims(input_patch, axis=0)
         return input_patch
 
     if job_name == "ps":
@@ -141,6 +140,7 @@ def main_fun(argv, ctx):
 if __name__ == '__main__':
     conf = SparkConf()
     conf.setMaster('yarn-client')
+    conf.set("spark.kryoserializer.buffer.max.mb", "1024")
     conf.set('spark.yarn.dist.files',
              'file:/usr/local/lib/python2.7/dist-packages/pyspark/python/lib/pyspark.zip,file:/usr/local/lib/python2.7/dist-packages/pyspark/python/lib/py4j-0.10.7-src.zip')
     conf.setExecutorEnv('PYTHONPATH', 'pyspark.zip:py4j-0.10.7-src.zip')
@@ -169,11 +169,6 @@ if __name__ == '__main__':
                         default='hdfs://gpu10:9000/Sony_pickle_test/image_data/00001_00_0.1s.pkl')
     args = parser.parse_args()
 
-    # ssc = StreamingContext(sc, 5)
-
-    hdfs_path = 'hdfs://gpu10:9000/Sony_pickle_test/image_data/00001_00_0.1s.pkl'
-    filename = 'teststring_new.txt'
-
 
     # local_path = 'file://hduser@gpu10/home/hduser/spark-streaming/input'
 
@@ -191,7 +186,8 @@ if __name__ == '__main__':
     imageRDD = sc.binaryFiles(args.inputfile).sortByKey(ascending=True).map(lambda (k, v): (pickle.load(BytesIO(v))))
     # words = rawtextRDD.flatMap(lambda line: line.split(" "))
     inputfile = imageRDD.collect()
-
+    print(inputfile)
+    print(inputfile[0].shape)
     # pairs = words.map(lambda word: (word, 1))
     # wordCounts = pairs.reduceByKey(lambda x, y: x + y)
     cluster = TFCluster.run(sc, main_fun, args, args.cluster_size, args.num_ps, args.tensorboard,
