@@ -1,8 +1,8 @@
-from __future__ import division
+from pyspark import SparkContext, SparkConf
+import numpy as np
+from tensorflowonspark import TFCluster
 import argparse
 import pickle
-from pyspark import SparkContext, SparkConf
-from tensorflowonspark import TFCluster
 from io import BytesIO
 
 
@@ -20,19 +20,23 @@ def main_fun(argv, ctx):
     job_name = ctx.job_name
     task_index = ctx.task_index
 
-    if job_name == "ps":
-        time.sleep((worker_num + 1) * 5)
-
     # the cluster has no GPUs
     cluster, server = TFNode.start_cluster_server(ctx, num_gpus=0)
+    # Create generator for Spark data feed
+    tf_feed = ctx.get_data_feed(argv.mode == 'train')
 
-    def feed_dict(batch):
-        input_patch = np.zeros((1, 512, 512, 4))
+    def rdd_generator():
+        while not tf_feed.should_stop():
+            batch = tf_feed.next_batch(1)
 
-        if batch:
-            input_patch = np.array(batch[0][0]).reshape((1, 512, 512, 4))
+            if len(batch) == 0:
+                return
 
-        return input_patch
+            # TODO: any transformations needed?
+            row = batch[0]
+            input_patch = row[0]
+
+            yield (input_patch, np.random.rand(1024, 1024, 3))
 
     if job_name == "ps":
         server.join()
@@ -93,10 +97,19 @@ def main_fun(argv, ctx):
                 out = tf.depth_to_space(conv10, 2)
                 return out
 
-            in_image = tf.placeholder(tf.float32, [None, None, None, 4])
-            gt_image = tf.placeholder(tf.float32, [None, None, None, 3])
+            ds = tf.data.Dataset.from_generator(rdd_generator, (tf.float32, tf.float32), (
+                tf.TensorShape([None, None, 4]), tf.TensorShape([None, None, 3]))).batch(1)
+            iterator = ds.make_one_shot_iterator()
+            in_image, gt_image = iterator.get_next()
 
             out_image = network(in_image)
+
+            global_step = tf.train.get_or_create_global_step()
+            G_loss = tf.reduce_mean(tf.abs(out_image - gt_image))
+
+            t_vars = tf.trainable_variables()
+            lr = tf.placeholder(tf.float32)
+            G_opt = tf.train.AdamOptimizer(learning_rate=lr).minimize(G_loss, global_step=global_step)
 
             saver = tf.train.Saver()
             init_op = tf.global_variables_initializer()
@@ -105,37 +118,40 @@ def main_fun(argv, ctx):
         logdir = ctx.absolute_path(argv.model)
         print("tensorflow model path: {0}".format(logdir))
 
-        sv = tf.train.Supervisor(is_chief=(task_index == 0),
-                                 logdir=logdir,
-                                 summary_op=None,
-                                 saver=saver,
-                                 stop_grace_secs=300,
-                                 save_model_secs=0)
+        with tf.train.MonitoredTrainingSession(master=server.target,
+                                               is_chief=(task_index == 0),
+                                               scaffold=tf.train.Scaffold(init_op=init_op, saver=saver),
+                                               checkpoint_dir=logdir,
+                                               hooks=[]) as sess:
+            print("{} session ready".format(datetime.now().isoformat()))
 
-        with sv.managed_session(server.target) as sess:
-            print("{0} session ready".format(datetime.now().isoformat()))
+            while not sess.should_stop() and not tf_feed.should_stop():
+                output = sess.run(out_image)
+                output = np.minimum(np.maximum(output, 0), 1)
+                # TODO: convert back to image later!!
+                # output = scipy.misc.toimage(output * 255, high=255, low=0, cmin=0, cmax=255)
+                tf_feed.batch_results(output)
 
-            # Loop until the supervisor shuts down or 1000000 steps have completed.
-            step = 0
-            tf_feed = TFNode.DataFeed(ctx.mgr, args.mode == "train")
-            while not sv.should_stop() and not tf_feed.should_stop() and step < argv.steps:
-                # Run a training step asynchronously.
-                # See `tf.train.SyncReplicasOptimizer` for additional details on how to
-                # perform *synchronous* training.
+        print("{} stopping MonitoredTrainingSession".format(datetime.now().isoformat()))
 
-                # using feed_dict
-                batch_xs = feed_dict(tf_feed.next_batch(1))
+        if sess.should_stop():
+            tf_feed.terminate()
 
-                if len(batch_xs) > 0:
-                    output = sess.run(out_image, feed_dict={in_image: batch_xs})
-                    output = np.minimum(np.maximum(output, 0), 1)
-                    tf_feed.batch_results(output)
+        # WORKAROUND FOR https://github.com/tensorflow/tensorflow/issues/21745
+        # wait for all other nodes to complete (via done files)
+        done_dir = "{}/{}/done".format(ctx.absolute_path(argv.model), argv.mode)
+        print("Writing done file to: {}".format(done_dir))
+        tf.gfile.MakeDirs(done_dir)
+        with tf.gfile.GFile("{}/{}".format(done_dir, ctx.task_index), 'w') as done_file:
+            done_file.write("done")
 
-            if sv.should_stop() or step >= argv.steps:
-                tf_feed.terminate()
-
-        print("{0} stopping supervisor".format(datetime.now().isoformat()))
-        sv.stop()
+        for i in range(60):
+            if len(tf.gfile.ListDirectory(done_dir)) < len(ctx.cluster_spec['worker']):
+                print("{} Waiting for other nodes {}".format(datetime.now().isoformat(), i))
+                time.sleep(1)
+            else:
+                print("{} All nodes done".format(datetime.now().isoformat()))
+                break
 
 
 if __name__ == '__main__':
@@ -160,9 +176,8 @@ if __name__ == '__main__':
     parser.add_argument("--tensorboard", help="launch tensorboard process", default=False)
     parser.add_argument("--mode", help="train|inference", default="inference")
     parser.add_argument("--epochs", help="number of epochs", type=int, default=1)
-    parser.add_argument("--steps", help="maximum number of steps", type=int, default=1)
     parser.add_argument("--model", help="HDFS path to save/load model during train/inference",
-                        default='hdfs://gpu10:9000/checkpoint_pretrained/')
+                        default='hdfs://gpu10:9000/Sony_model/')
     parser.add_argument("--output", help="HDFS path to save output file",
                         default='hdfs://gpu10:9000/Sony_output/batch')
     args = parser.parse_args()
@@ -183,6 +198,13 @@ if __name__ == '__main__':
 
     # rawtextRDD.pprint()
     # convert string to numpy array with specific shape
+
+    def string2numpy(input):
+        # content = BytesIO(input)
+        # input = input.decode('utf-16')
+        input = input.replace('x', '\n')
+        output = np.array(input)
+        return output
 
 
     # parse the string rdd to numpy rdd
