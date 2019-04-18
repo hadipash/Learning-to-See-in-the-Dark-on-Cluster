@@ -180,63 +180,28 @@ if __name__ == '__main__':
                         default='hdfs://gpu10:9000/Sony_model/')
     parser.add_argument("--output", help="HDFS path to save output file",
                         default='hdfs://gpu10:9000/Sony_output/batch')
+    parser.add_argument("--outputfile", help="local file for output",
+                        default='./numpy.pkl')
+    parser.add_argument("--inputfile", help="Input File",
+                        default='hdfs://gpu10:9000/Sony_pickle_test/image_data/00001_00_0.1s.pkl')
     args = parser.parse_args()
 
-    # ssc = StreamingContext(sc, 5)
-
-    hdfs_path = 'hdfs://gpu10:9000/Sony_pickle_test/image_data/00001_00_0.1s.pkl'
-    filename = 'teststring_new.txt'
-
-
-    # local_path = 'file://hduser@gpu10/home/hduser/spark-streaming/input'
-
-    # rawtextRDD = sc.wholeTextFiles(hdfs_path + filename)
-
-    # rawtextRDD = ssc.textFileStream(hdfs_path)
-    # Create a DStream that will connect to hostname:port, like localhost:9999
-    # rawtextRDD = ssc.socketTextStream("gpu10", 9999)
-
-    # rawtextRDD.pprint()
-    # convert string to numpy array with specific shape
-
-    def string2numpy(input):
-        # content = BytesIO(input)
-        # input = input.decode('utf-16')
-        input = input.replace('x', '\n')
-        output = np.array(input)
-        return output
-
-
-    # parse the string rdd to numpy rdd
     imageRDD = sc.binaryFiles(hdfs_path).sortByKey(ascending=True).map(lambda (k, v): (pickle.load(BytesIO(v))))
-    # words = rawtextRDD.flatMap(lambda line: line.split(" "))
     inputfile = imageRDD.collect()
     print(inputfile)
 
-    # pairs = words.map(lambda word: (word, 1))
-    # wordCounts = pairs.reduceByKey(lambda x, y: x + y)
     cluster = TFCluster.run(sc, main_fun, args, args.cluster_size, args.num_ps, args.tensorboard,
                             TFCluster.InputMode.SPARK)
 
     print('inference starting.....................................')
     labelRDD = cluster.inference(imageRDD)
     print('inference finished.....................................')
-    '''
-    def sendRecord(rdd):
-        connection = createNewConnection()  # executed at the driver
-        rdd.foreach(lambda record: connection.send(record))
-        connection.close()
-    '''
 
-    # labelRDD.pprint()
-    # lambda rdd: rdd.saveAsTextFile(args.output + "{}".format(datetime.now().isoformat()).replace(':', '_'))
-    # labelRDD.foreachRDD(print)
-    # labelRDD.saveAsTextFiles(args.output)
-    output = labelRDD.take(1)
+    output = labelRDD.collect()
     print(output)
-    cluster.shutdown()
+    with open(args.outputfile,'wb') as f:
+        pickle.dump(output, f)
 
-    # ssc.start()             # Start the computation
-    # ssc.awaitTermination()  # Wait for the computation to terminate
+    cluster.shutdown()
 
     print('stopped')
