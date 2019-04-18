@@ -24,7 +24,7 @@ while True:
         '''
         while 1:
             sentence = raw_input("What is your sentence? \n")
-            sentence = sentence.encode('utf-8')
+            #sentence = sentence.encode('utf-8')
             conn.send(sentence + '\n')
             #conn.close()
     except:
