@@ -163,8 +163,10 @@ if __name__ == '__main__':
     parser.add_argument("--steps", help="maximum number of steps", type=int, default=1)
     parser.add_argument("--model", help="HDFS path to save/load model during train/inference",
                         default='hdfs://gpu10:9000/checkpoint_pretrained/')
-    parser.add_argument("--output", help="HDFS path to save output file",
-                        default='hdfs://gpu10:9000/Sony_output/batch')
+    parser.add_argument("--outputfile", help="local file for output",
+                        default='./numpy.pkl')
+    parser.add_argument("--inputfile", help="Input File",
+                        default='hdfs://gpu10:9000/Sony_pickle_test/image_data/00001_00_0.1s.pkl')
     args = parser.parse_args()
 
     # ssc = StreamingContext(sc, 5)
@@ -205,6 +207,10 @@ if __name__ == '__main__':
         rdd.foreach(lambda record: connection.send(record))
         connection.close()
     '''
+    output = labelRDD.collect()
+    print(output)
+    with open(args.outputfile,'wb') as f:
+        pickle.dump(output, f)
 
     # labelRDD.pprint()
     # lambda rdd: rdd.saveAsTextFile(args.output + "{}".format(datetime.now().isoformat()).replace(':', '_'))

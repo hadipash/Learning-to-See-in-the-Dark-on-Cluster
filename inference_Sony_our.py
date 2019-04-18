@@ -186,10 +186,8 @@ if __name__ == '__main__':
                         default='hdfs://gpu10:9000/Sony_pickle_test/image_data/00001_00_0.1s.pkl')
     args = parser.parse_args()
 
-    imageRDD = sc.binaryFiles(hdfs_path).sortByKey(ascending=True).map(lambda (k, v): (pickle.load(BytesIO(v))))
-    inputfile = imageRDD.collect()
-    print(inputfile)
-
+    imageRDD = sc.binaryFiles(args.inputfile).sortByKey(ascending=True).map(lambda (k, v): (pickle.load(BytesIO(v))))
+ 
     cluster = TFCluster.run(sc, main_fun, args, args.cluster_size, args.num_ps, args.tensorboard,
                             TFCluster.InputMode.SPARK)
 
