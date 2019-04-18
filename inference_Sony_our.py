@@ -1,12 +1,8 @@
-# Original code: https://github.com/cchen156/Learning-to-See-in-the-Dark
-
-# uniform content loss + adaptive threshold + per_class_input + recursive G
-# improvement upon cqf37
-from __future__ import division
+from pyspark import SparkContext, SparkConf
+import numpy as np
+from tensorflowonspark import TFCluster
 import argparse
 import pickle
-from pyspark import SparkContext, SparkConf
-from tensorflowonspark import TFCluster
 from io import BytesIO
 
 
@@ -36,25 +32,11 @@ def main_fun(argv, ctx):
             if len(batch) == 0:
                 return
 
-            input_patch = batch[0][0]
-            gt_patch = batch[0][1]
+            # TODO: any transformations needed?
+            row = batch[0]
+            input_patch = row[0]
 
-            if np.random.randint(2, size=1)[0] == 1:  # random flip
-                input_patch = np.flip(input_patch, axis=1)
-                gt_patch = np.flip(gt_patch, axis=1)
-            if np.random.randint(2, size=1)[0] == 1:
-                input_patch = np.flip(input_patch, axis=2)
-                gt_patch = np.flip(gt_patch, axis=2)
-            if np.random.randint(2, size=1)[0] == 1:  # random transpose
-                input_patch = np.transpose(input_patch, (0, 2, 1, 3))
-                gt_patch = np.transpose(gt_patch, (0, 2, 1, 3))
-
-            input_patch = np.minimum(input_patch, 1.0)
-
-            gt_patch = np.squeeze(gt_patch, axis=0)
-            input_patch = np.squeeze(input_patch, axis=0)
-
-            yield (input_patch, gt_patch)
+            yield (input_patch, np.random.rand(1024, 1024, 3))
 
     if job_name == "ps":
         server.join()
@@ -115,9 +97,8 @@ def main_fun(argv, ctx):
                 out = tf.depth_to_space(conv10, 2)
                 return out
 
-            # Dataset for input data
             ds = tf.data.Dataset.from_generator(rdd_generator, (tf.float32, tf.float32), (
-                tf.TensorShape([None, None, 4]), tf.TensorShape([None, None, 3]))).batch(argv.batch_size)
+                tf.TensorShape([None, None, 4]), tf.TensorShape([None, None, 3]))).batch(1)
             iterator = ds.make_one_shot_iterator()
             in_image, gt_image = iterator.get_next()
 
@@ -137,29 +118,23 @@ def main_fun(argv, ctx):
         logdir = ctx.absolute_path(argv.model)
         print("tensorflow model path: {0}".format(logdir))
 
-        epoch_thresh = 2000 * (280 / argv.batch_size)
-        learning_rate = 1e-4
-
-        hooks = [tf.train.StopAtStepHook(last_step=argv.steps)] if argv.mode == "train" else []
         with tf.train.MonitoredTrainingSession(master=server.target,
                                                is_chief=(task_index == 0),
                                                scaffold=tf.train.Scaffold(init_op=init_op, saver=saver),
                                                checkpoint_dir=logdir,
-                                               save_checkpoint_steps=3000,
-                                               hooks=hooks) as sess:
+                                               hooks=[]) as sess:
             print("{} session ready".format(datetime.now().isoformat()))
 
-            step = 0
             while not sess.should_stop() and not tf_feed.should_stop():
-                if step > epoch_thresh:
-                    learning_rate = 1e-5
-
-                _, G_current, output, step = sess.run([G_opt, G_loss, out_image, global_step],
-                                                      feed_dict={lr: learning_rate})
+                output = sess.run(out_image)
+                output = np.minimum(np.maximum(output, 0), 1)
+                # TODO: convert back to image later!!
+                # output = scipy.misc.toimage(output * 255, high=255, low=0, cmin=0, cmax=255)
+                tf_feed.batch_results(output)
 
         print("{} stopping MonitoredTrainingSession".format(datetime.now().isoformat()))
 
-        if sess.should_stop() or step >= argv.steps:
+        if sess.should_stop():
             tf_feed.terminate()
 
         # WORKAROUND FOR https://github.com/tensorflow/tensorflow/issues/21745
@@ -180,36 +155,88 @@ def main_fun(argv, ctx):
 
 
 if __name__ == '__main__':
-    sc = SparkContext(conf=SparkConf().setAppName("See in the Dark (train Sony)"))
+    conf = SparkConf()
+    conf.setMaster('yarn-client')
+    conf.set('spark.yarn.dist.files',
+             'file:/usr/local/lib/python2.7/dist-packages/pyspark/python/lib/pyspark.zip,file:/usr/local/lib/python2.7/dist-packages/pyspark/python/lib/py4j-0.10.7-src.zip')
+    conf.setExecutorEnv('PYTHONPATH', 'pyspark.zip:py4j-0.10.7-src.zip')
+    conf.setAppName('spark-streaming')
+
+    # Create a local StreamingContext with two working thread and batch interval of 1 second
+    sc = SparkContext(conf=conf)
+    # sc.setLogLevel("FATAL")
+
     executors = sc.getConf().get("spark.executor.instances")
     num_executors = int(executors) if executors is not None else 1
 
     # arguments for Spark and TFoS
     parser = argparse.ArgumentParser()
-    parser.add_argument("--batch_size", help="number of records per batch", type=int, default=2)
     parser.add_argument("--cluster_size", help="number of nodes in the cluster", type=int, default=num_executors)
     parser.add_argument("--num_ps", help="number of ps nodes", type=int, default=1)
     parser.add_argument("--tensorboard", help="launch tensorboard process", default=False)
-    parser.add_argument("--mode", help="train|inference", default="train")
-    parser.add_argument("--epochs", help="number of epochs", type=int, default=10)
-    parser.add_argument("--steps", help="maximum number of steps", type=int, default=1400)
+    parser.add_argument("--mode", help="train|inference", default="inference")
+    parser.add_argument("--epochs", help="number of epochs", type=int, default=1)
     parser.add_argument("--model", help="HDFS path to save/load model during train/inference",
-                        default='hdfs://gpu10:9000/Sony_model')
-    parser.add_argument("--input-dir", help="HDFS path to training set",
-                        default='hdfs://gpu10:9000/Sony_pickle/image_data')
-    parser.add_argument("--gt-dir", help="HDFS path to ground truth training set",
-                        default='hdfs://gpu10:9000/Sony_pickle/gt_data')
+                        default='hdfs://gpu10:9000/Sony_model/')
+    parser.add_argument("--output", help="HDFS path to save output file",
+                        default='hdfs://gpu10:9000/Sony_output/batch')
     args = parser.parse_args()
 
-    in_images = sc.binaryFiles(args.input_dir, 560).sortByKey(ascending=True).map(lambda (k, v): (pickle.load(BytesIO(v))))
-    gt_images = sc.binaryFiles(args.gt_dir, 560).sortByKey(ascending=True).map(lambda (k, v): pickle.load(BytesIO(v)))
-    dataRDD = in_images.zip(gt_images)
-    dataRDD = dataRDD.cache()
+    # ssc = StreamingContext(sc, 5)
 
+    hdfs_path = 'hdfs://gpu10:9000/Sony_pickle_test/image_data/00001_00_0.1s.pkl'
+    filename = 'teststring_new.txt'
+
+
+    # local_path = 'file://hduser@gpu10/home/hduser/spark-streaming/input'
+
+    # rawtextRDD = sc.wholeTextFiles(hdfs_path + filename)
+
+    # rawtextRDD = ssc.textFileStream(hdfs_path)
+    # Create a DStream that will connect to hostname:port, like localhost:9999
+    # rawtextRDD = ssc.socketTextStream("gpu10", 9999)
+
+    # rawtextRDD.pprint()
+    # convert string to numpy array with specific shape
+
+    def string2numpy(input):
+        # content = BytesIO(input)
+        # input = input.decode('utf-16')
+        input = input.replace('x', '\n')
+        output = np.array(input)
+        return output
+
+
+    # parse the string rdd to numpy rdd
+    imageRDD = sc.binaryFiles(hdfs_path).sortByKey(ascending=True).map(lambda (k, v): (pickle.load(BytesIO(v))))
+    # words = rawtextRDD.flatMap(lambda line: line.split(" "))
+    inputfile = imageRDD.collect()
+    print(inputfile)
+
+    # pairs = words.map(lambda word: (word, 1))
+    # wordCounts = pairs.reduceByKey(lambda x, y: x + y)
     cluster = TFCluster.run(sc, main_fun, args, args.cluster_size, args.num_ps, args.tensorboard,
                             TFCluster.InputMode.SPARK)
 
-    if args.mode == 'train':
-        cluster.train(dataRDD, args.epochs)
+    print('inference starting.....................................')
+    labelRDD = cluster.inference(imageRDD)
+    print('inference finished.....................................')
+    '''
+    def sendRecord(rdd):
+        connection = createNewConnection()  # executed at the driver
+        rdd.foreach(lambda record: connection.send(record))
+        connection.close()
+    '''
 
+    # labelRDD.pprint()
+    # lambda rdd: rdd.saveAsTextFile(args.output + "{}".format(datetime.now().isoformat()).replace(':', '_'))
+    # labelRDD.foreachRDD(print)
+    # labelRDD.saveAsTextFiles(args.output)
+    output = labelRDD.take(1)
+    print(output)
     cluster.shutdown()
+
+    # ssc.start()             # Start the computation
+    # ssc.awaitTermination()  # Wait for the computation to terminate
+
+    print('stopped')
