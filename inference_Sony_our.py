@@ -1,9 +1,7 @@
-from pyspark import SparkContext, SparkConf
-import numpy as np
-from tensorflowonspark import TFCluster
-import argparse
-import pickle
-from io import BytesIO
+# Original code: https://github.com/cchen156/Learning-to-See-in-the-Dark
+
+# uniform content loss + adaptive threshold + per_class_input + recursive G
+# improvement upon cqf37
 
 
 def main_fun(argv, ctx):
@@ -32,7 +30,6 @@ def main_fun(argv, ctx):
             if len(batch) == 0:
                 return
 
-            # TODO: any transformations needed?
             row = batch[0]
             input_patch = row[0]
 
@@ -128,8 +125,6 @@ def main_fun(argv, ctx):
             while not sess.should_stop() and not tf_feed.should_stop():
                 output = sess.run(out_image)
                 output = np.minimum(np.maximum(output, 0), 1)
-                # TODO: convert back to image later!!
-                # output = scipy.misc.toimage(output * 255, high=255, low=0, cmin=0, cmax=255)
                 tf_feed.batch_results(output)
 
         print("{} stopping MonitoredTrainingSession".format(datetime.now().isoformat()))
@@ -152,54 +147,3 @@ def main_fun(argv, ctx):
             else:
                 print("{} All nodes done".format(datetime.now().isoformat()))
                 break
-
-
-if __name__ == '__main__':
-    conf = SparkConf()
-    conf.setMaster('yarn-client')
-    conf.set('spark.yarn.dist.files',
-             'file:/usr/local/lib/python2.7/dist-packages/pyspark/python/lib/pyspark.zip,file:/usr/local/lib/python2.7/dist-packages/pyspark/python/lib/py4j-0.10.7-src.zip')
-    conf.setExecutorEnv('PYTHONPATH', 'pyspark.zip:py4j-0.10.7-src.zip')
-    conf.setAppName('spark-streaming')
-
-    # Create a local StreamingContext with two working thread and batch interval of 1 second
-    sc = SparkContext(conf=conf)
-    # sc.setLogLevel("FATAL")
-
-    executors = sc.getConf().get("spark.executor.instances")
-    num_executors = int(executors) if executors is not None else 1
-
-    # arguments for Spark and TFoS
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--cluster_size", help="number of nodes in the cluster", type=int, default=num_executors)
-    parser.add_argument("--num_ps", help="number of ps nodes", type=int, default=1)
-    parser.add_argument("--tensorboard", help="launch tensorboard process", default=False)
-    parser.add_argument("--mode", help="train|inference", default="inference")
-    parser.add_argument("--epochs", help="number of epochs", type=int, default=1)
-    parser.add_argument("--model", help="HDFS path to save/load model during train/inference",
-                        default='hdfs://gpu10:9000/Sony_model/')
-    parser.add_argument("--output", help="HDFS path to save output file",
-                        default='hdfs://gpu10:9000/Sony_output/batch')
-    parser.add_argument("--outputfile", help="local file for output",
-                        default='./numpy.pkl')
-    parser.add_argument("--inputfile", help="Input File",
-                        default='hdfs://gpu10:9000/Sony_pickle_test/image_data/00001_00_0.1s.pkl')
-    args = parser.parse_args()
-
-    imageRDD = sc.binaryFiles(args.inputfile).sortByKey(ascending=True).map(lambda (k, v): (pickle.load(BytesIO(v))))
- 
-    cluster = TFCluster.run(sc, main_fun, args, args.cluster_size, args.num_ps, args.tensorboard,
-                            TFCluster.InputMode.SPARK)
-
-    print('inference starting.....................................')
-    labelRDD = cluster.inference(imageRDD)
-    print('inference finished.....................................')
-
-    output = labelRDD.collect()
-    print(output)
-    with open(args.outputfile,'wb') as f:
-        pickle.dump(output, f)
-
-    cluster.shutdown()
-
-    print('stopped')

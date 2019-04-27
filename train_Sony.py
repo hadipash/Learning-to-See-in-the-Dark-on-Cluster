@@ -3,11 +3,6 @@
 # uniform content loss + adaptive threshold + per_class_input + recursive G
 # improvement upon cqf37
 from __future__ import division
-import argparse
-import pickle
-from pyspark import SparkContext, SparkConf
-from tensorflowonspark import TFCluster
-from io import BytesIO
 
 
 def main_fun(argv, ctx):
@@ -145,7 +140,7 @@ def main_fun(argv, ctx):
                                                is_chief=(task_index == 0),
                                                scaffold=tf.train.Scaffold(init_op=init_op, saver=saver),
                                                checkpoint_dir=logdir,
-                                               save_checkpoint_steps=3000,
+                                               save_checkpoint_steps=argv.save_steps,
                                                hooks=hooks) as sess:
             print("{} session ready".format(datetime.now().isoformat()))
 
@@ -177,39 +172,3 @@ def main_fun(argv, ctx):
             else:
                 print("{} All nodes done".format(datetime.now().isoformat()))
                 break
-
-
-if __name__ == '__main__':
-    sc = SparkContext(conf=SparkConf().setAppName("See in the Dark (train Sony)"))
-    executors = sc.getConf().get("spark.executor.instances")
-    num_executors = int(executors) if executors is not None else 1
-
-    # arguments for Spark and TFoS
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--batch_size", help="number of records per batch", type=int, default=2)
-    parser.add_argument("--cluster_size", help="number of nodes in the cluster", type=int, default=num_executors)
-    parser.add_argument("--num_ps", help="number of ps nodes", type=int, default=1)
-    parser.add_argument("--tensorboard", help="launch tensorboard process", default=False)
-    parser.add_argument("--mode", help="train|inference", default="train")
-    parser.add_argument("--epochs", help="number of epochs", type=int, default=10)
-    parser.add_argument("--steps", help="maximum number of steps", type=int, default=1400)
-    parser.add_argument("--model", help="HDFS path to save/load model during train/inference",
-                        default='hdfs://gpu10:9000/Sony_model')
-    parser.add_argument("--input-dir", help="HDFS path to training set",
-                        default='hdfs://gpu10:9000/Sony_pickle/image_data')
-    parser.add_argument("--gt-dir", help="HDFS path to ground truth training set",
-                        default='hdfs://gpu10:9000/Sony_pickle/gt_data')
-    args = parser.parse_args()
-
-    in_images = sc.binaryFiles(args.input_dir, 560).sortByKey(ascending=True).map(lambda (k, v): (pickle.load(BytesIO(v))))
-    gt_images = sc.binaryFiles(args.gt_dir, 560).sortByKey(ascending=True).map(lambda (k, v): pickle.load(BytesIO(v)))
-    dataRDD = in_images.zip(gt_images)
-    dataRDD = dataRDD.cache()
-
-    cluster = TFCluster.run(sc, main_fun, args, args.cluster_size, args.num_ps, args.tensorboard,
-                            TFCluster.InputMode.SPARK)
-
-    if args.mode == 'train':
-        cluster.train(dataRDD, args.epochs)
-
-    cluster.shutdown()
