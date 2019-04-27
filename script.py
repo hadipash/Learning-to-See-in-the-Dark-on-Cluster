@@ -23,6 +23,7 @@ if __name__ == '__main__':
     parser.add_argument("--num_ps", help="number of ps nodes", type=int, default=1)
     parser.add_argument("--tensorboard", help="launch tensorboard process", default=False)
     parser.add_argument("--mode", help="train|inference", default="train")
+    parser.add_argument("--inference", help="pretrained|our", default="our")
     parser.add_argument("--epochs", help="number of epochs", type=int, default=10)
     parser.add_argument("--steps", help="maximum number of steps", type=int, default=1400)
     parser.add_argument("--save_steps", help="model saving frequency", type=int, default=3000)
