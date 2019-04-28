@@ -1,9 +1,9 @@
+# Original code: https://github.com/cchen156/Learning-to-See-in-the-Dark
+
+# uniform content loss + adaptive threshold + per_class_input + recursive G
+# improvement upon cqf37
 from __future__ import division
-import argparse
-import pickle
-from pyspark import SparkContext, SparkConf
-from tensorflowonspark import TFCluster
-from io import BytesIO
+
 
 def main_fun(argv, ctx):
     # this will be executed/imported on the executors.
@@ -29,7 +29,7 @@ def main_fun(argv, ctx):
         input_patch = np.zeros((1, 512, 512, 4))
 
         if batch:
-            input_patch = np.array(batch[0][0])#.reshape((1, 512, 512, 4))
+            input_patch = np.array(batch[0][0])
             input_patch = np.expand_dims(input_patch, axis=0)
         return input_patch
 
@@ -116,7 +116,7 @@ def main_fun(argv, ctx):
 
             # Loop until the supervisor shuts down or 1000000 steps have completed.
             step = 0
-            tf_feed = TFNode.DataFeed(ctx.mgr, args.mode == "train")
+            tf_feed = TFNode.DataFeed(ctx.mgr, argv.mode == "train")
             while not sv.should_stop() and not tf_feed.should_stop() and step < argv.steps:
                 # Run a training step asynchronously.
                 # See `tf.train.SyncReplicasOptimizer` for additional details on how to
@@ -135,76 +135,3 @@ def main_fun(argv, ctx):
 
         print("{0} stopping supervisor".format(datetime.now().isoformat()))
         sv.stop()
-
-
-if __name__ == '__main__':
-    conf = SparkConf()
-    conf.setMaster('yarn-client')
-    conf.set("spark.kryoserializer.buffer.max.mb", "1024")
-    conf.set('spark.yarn.dist.files',
-             'file:/usr/local/lib/python2.7/dist-packages/pyspark/python/lib/pyspark.zip,file:/usr/local/lib/python2.7/dist-packages/pyspark/python/lib/py4j-0.10.7-src.zip')
-    conf.setExecutorEnv('PYTHONPATH', 'pyspark.zip:py4j-0.10.7-src.zip')
-    conf.setAppName('spark-streaming')
-
-    # Create a local StreamingContext with two working thread and batch interval of 1 second
-    sc = SparkContext(conf=conf)
-    # sc.setLogLevel("FATAL")
-
-    executors = sc.getConf().get("spark.executor.instances")
-    num_executors = int(executors) if executors is not None else 1
-
-    # arguments for Spark and TFoS
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--cluster_size", help="number of nodes in the cluster", type=int, default=num_executors)
-    parser.add_argument("--num_ps", help="number of ps nodes", type=int, default=1)
-    parser.add_argument("--tensorboard", help="launch tensorboard process", default=False)
-    parser.add_argument("--mode", help="train|inference", default="inference")
-    parser.add_argument("--epochs", help="number of epochs", type=int, default=1)
-    parser.add_argument("--steps", help="maximum number of steps", type=int, default=1)
-    parser.add_argument("--model", help="HDFS path to save/load model during train/inference",
-                        default='hdfs://gpu10:9000/checkpoint_pretrained/')
-    parser.add_argument("--outputfile", help="local file for output",
-                        default='./numpy.pkl')
-    parser.add_argument("--inputfile", help="Input File",
-                        default='hdfs://gpu10:9000/Sony_pickle_test/image_data/00001_00_0.1s.pkl')
-    args = parser.parse_args()
-
-
-    # local_path = 'file://hduser@gpu10/home/hduser/spark-streaming/input'
-
-    # rawtextRDD = sc.wholeTextFiles(hdfs_path + filename)
-
-    # rawtextRDD = ssc.textFileStream(hdfs_path)
-    # Create a DStream that will connect to hostname:port, like localhost:9999
-    # rawtextRDD = ssc.socketTextStream("gpu10", 9999)
-
-    # rawtextRDD.pprint()
-    # convert string to numpy array with specific shape
-
-
-    # parse the string rdd to numpy rdd
-    imageRDD = sc.binaryFiles(args.inputfile).sortByKey(ascending=True).map(lambda (k, v): (pickle.load(BytesIO(v))))
-    # words = rawtextRDD.flatMap(lambda line: line.split(" "))
-    inputfile = imageRDD.collect()
-    print(inputfile)
-    print(inputfile[0].shape)
-    # pairs = words.map(lambda word: (word, 1))
-    # wordCounts = pairs.reduceByKey(lambda x, y: x + y)
-    cluster = TFCluster.run(sc, main_fun, args, args.cluster_size, args.num_ps, args.tensorboard,
-                            TFCluster.InputMode.SPARK)
-
-    print('inference starting.....................................')
-    labelRDD = cluster.inference(imageRDD)
-    print('inference finished.....................................')
-
-    output = labelRDD.collect()
-    print(output)
-    with open(args.outputfile,'wb') as f:
-        pickle.dump(output, f)
-
-    cluster.shutdown()
-
-    # ssc.start()             # Start the computation
-    # ssc.awaitTermination()  # Wait for the computation to terminate
-
-    print('stopped')
