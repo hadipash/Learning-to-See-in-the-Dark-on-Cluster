@@ -1,0 +1,43 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Group 10</title>
+
+    <style>
+        body{
+            background-color: goldenrod;
+            background-image: url("../static/image/long-exposition-2722908_1280.jpg");
+            background-size:cover;
+        }
+        .center {
+          display: block;
+          margin-left: auto;
+          margin-right: auto;
+          width: 50%;
+        }
+    </style>
+</head>
+<body>
+    <h1 style="font-family: 'Century Gothic'; font-size: 50px; text-align: center; color: lavender">
+        How to make your image brighter and sharper?</h1>
+
+    <p style="top: 100px;">
+        <img src="{{ url_for('static', filename = 'book.png') }}" class="center" width="900" height="200">
+    </p>
+
+    <p style="top: 100px;">
+        <img src="{{ url_for('static', filename = 'heart.png') }}" class="center" width="900" height="200">
+    </p>
+
+    <p class="center" style="font-size: 10px; font-family: 'Arial'; color: #000000; top: 600px">
+        Image Source: Chen Chen, Qifeng Chen, Jia Xu, and Vladlen Koltun. Learning to See in the Dark. In CVPR, 2018.</p>
+
+    <p align="center" style="font-family: 'Century Gothic'; font-size: 35px; color: #eeeeee; margin-top: 50px">
+        <a href="{{ url_for('jump') }}">Try with Your Own Image</a>
+    </p>
+
+
+</body>
+</html>

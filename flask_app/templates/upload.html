@@ -1,0 +1,95 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css" integrity="sha384-ggOyR0iXCbMQv3Xipma34MD+dH/1fQ784/j6cY/iJTQUOhcWr7x9JvoRxT2MZw1T" crossorigin="anonymous">
+
+    <meta charset="UTF-8">
+    <title>group10_upload</title>
+    <style>
+        body{
+            background-image: url("../static/image/long-exposition-2722908_1280.jpg");
+            background-color:#ffe400;
+            background-size:cover;
+        }
+
+        .btn-file input[type=file] {
+            position: absolute;
+            top: 0;
+            right: 0;
+            min-width: 100%;
+            min-height: 100%;
+            font-size: 100px;
+            text-align: right;
+            filter: alpha(opacity=0);
+            opacity: 0;
+            outline: none;
+            background: white;
+            cursor: inherit;
+            display: block;
+        }
+        .column {
+          float: left;
+          width: 50%;
+          padding: 20px;
+        }
+        .row::after {
+          content: "";
+          clear: both;
+          display: table;
+          margin-top: 200px;
+          margin-left: 50px;
+          margin-right: 50px;
+        }
+    </style>
+</head>
+<body>
+
+
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.min.js" integrity="sha384-xBuQ/xzmlsLoJpyjoggmTEz8OWUFM0/RC5BsqQBDX2v5cMvDHcMakNTNrHIW2I5f" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.14.7/umd/popper.min.js" integrity="sha384-UO2eT0CpHqdSJQ6hJty5KVphtPhzWj9WO1clHTMGa3JDZwrnQq4sF86dIHNDz0W1" crossorigin="anonymous"></script>
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/js/bootstrap.min.js" integrity="sha384-JjSmVgyd0p3pXB1rRibZUAYoIIy6OrQ6VrjIEaFf/nJGzIxFDsf4x0xIM+B07jRM" crossorigin="anonymous"></script>
+    <script src="../static/js/vendor/jquery.ui.widget.js"></script>
+    <script src="../static/js/jquery.iframe-transport.js"></script>
+    <script type="text/javascript" src="../static/js/jquery.fileupload.js"></script>
+    <script type="text/javascript" src="../static/js/jquery.fileupload-process.js"></script>
+    <script type="text/javascript" src="../static/js/jquery.fileupload-ui.js"></script>
+
+     <div class="container">
+         <div class="header">
+             <h1> </h1><br>
+             <h1 style="text-align: center; color: lavender; font-family: 'Century Gothic'; font-size: 50px;">
+                 Seeing in the Dark</h1>
+
+         </div>
+
+         <form class="form-horizontal" enctype="multipart/form-data" method="post" action="/uploadImage">
+
+            <div class="form-group" style="position: absolute; top: 150px">
+
+                <input type="file" name="image" />
+                <button
+                    class="btn btn-outline-info btn-info btn-rounded btn-block z-depth-0 my-4 waves-effect"
+                    type="submit" style="color: lavender">
+                    Submit
+                </button>
+
+            </div>
+         </form>
+     </div>
+
+    <div class="row">
+      <div class="column">
+        <img src="{{ input_image }}" alt="Input Image" style="width: 600px; height: 400px; position: absolute; top: 350px">
+      </div>
+      <div class="column">
+        <img src="{{ output_image }}" alt="Output Image" style="width: 600px; height: 400px; position: absolute; top: 350px">
+      </div>
+    </div>
+
+
+
+</body>
+</html>
+
+
